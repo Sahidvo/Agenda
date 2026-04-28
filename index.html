@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Footlab Pro - Gestión Clínica y Cobros</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, doc, updateDoc, setDoc, deleteDoc, where, getDocs } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+    const firebaseConfig = {
+        apiKey: "AIzaSyBQ6A_4h7UVjt_pxBZOaMaZZh-b6-edF2o",
+        authDomain: "facturacion-c8682.firebaseapp.com",
+        projectId: "facturacion-c8682",
+        storageBucket: "facturacion-c8682.firebasestorage.app",
+        messagingSenderId: "875153421377",
+        appId: "1:875153421377:web:299738ad96a684797902c0",
+        measurementId: "G-SCQ98GG0BC"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    window.dbFirestore = getFirestore(app);
+
+    // --- VARIABLES DE ESTADO ---
+    let calendar;
+    let selectedCitaId = null;
+    let dbClientes = [];
+    let dbServicios = []; 
+    let dbFacturas = [];
+    let selectedSlotInfo = null;
+    window.items = [];
+
+    window.addEventListener('load', () => {
+        initCalendar();
+        escucharServicios();
+        escucharClientes();
+        escucharCitas();
+        escucharFacturas();
+    });
+
+    // --- GESTIÓN DE SERVICIOS (CATÁLOGO) ---
+    function escucharServicios() {
+        onSnapshot(collection(window.dbFirestore, "config_servicios"), (s) => {
+            dbServicios = s.docs.map(d => ({ id: d.id, ...d.data() }));
+            
+            // Actualizar desplegables
+            const combos = ['citaServicio', 'comboServiciosCobro'];
+            combos.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.innerHTML = '<option value="">-- Seleccionar servicio --</option>' + 
+                        dbServicios.map(ser => `<option value="${ser.nombre}">${ser.nombre} (${ser.precio}€ - ${ser.tiempo}min)</option>`).join('');
+                }
+            });
+
+            // Si el modal de gestión está abierto, refrescar la lista interna
+            if(!document.getElementById('modalGestionServicios').classList.contains('hidden')) {
+                renderizarListaAdminServicios();
+            }
+        });
+    }
+
+    window.abrirGestionServicios = () => {
+        document.getElementById('modalGestionServicios').classList.remove('hidden');
+        renderizarListaAdminServicios();
+    };
+
+    // Busca esta función en tu script y asegúrate de que el botón lápiz sea así:
+function renderizarListaAdminServicios() {
+    const contenedor = document.getElementById('listaServiciosAdmin');
+    if (!contenedor) return;
+    contenedor.innerHTML = dbServicios.map(s => `
+        <div class="flex justify-between items-center p-3 bg-white border-2 rounded-xl mb-2" style="border-left: 8px solid ${s.color || '#ddd'}">
+            <div>
+                <div class="font-bold text-gray-800 text-sm">${s.nombre}</div>
+                <div class="text-[10px] text-gray-400 font-bold">${s.precio}€ | ${s.tiempo} min</div>
+            </div>
+            <div class="flex gap-1">
+                <button onclick="window.cargarServicioEnCampos('${s.nombre}', ${s.precio}, ${s.tiempo}, '${s.color}')" class="p-2 text-blue-500 hover:bg-blue-50 rounded-lg">✏️</button>
+                <button onclick="window.eliminarServicioBase('${s.nombre}')" class="p-2 text-red-500 hover:bg-red-50 rounded-lg">🗑️</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+  // Actualizamos el guardado para incluir el color
+window.guardarServicioDesdeGestion = async () => {
+    const nom = document.getElementById('editServNombre').value.trim();
+    const pre = parseFloat(document.getElementById('editServPrecio').value);
+    const tie = parseInt(document.getElementById('editServTiempo').value);
+    const col = document.getElementById('editServColor').value; // Captura el color
+
+    if (nom && !isNaN(pre) && !isNaN(tie)) {
+        await setDoc(doc(window.dbFirestore, "config_servicios", nom), { 
+            nombre: nom, 
+            precio: pre, 
+            tiempo: tie,
+            color: col // Guardamos el color
+        });
+        document.getElementById('editServNombre').value = "";
+        document.getElementById('editServPrecio').value = "";
+        document.getElementById('editServTiempo').value = "";
+        alert("Servicio guardado con color");
+    }
+};
+
+// Cargamos el color en el selector al editar (cuando pulsas el lápiz)
+window.cargarServicioEnCampos = (n, p, t, c) => {
+    document.getElementById('editServNombre').value = n;
+    document.getElementById('editServPrecio').value = p;
+    document.getElementById('editServTiempo').value = t;
+    document.getElementById('editServColor').value = c || "#60a5fa"; // Color por defecto si no tiene
+};
+
+// IMPORTANTE: Modificamos la lógica de la agenda para aplicar el color del servicio
+function escucharCitas() {
+    onSnapshot(collection(window.dbFirestore, "citas"), (s) => {
+        const eventos = s.docs.map(d => {
+            const c = d.data();
+            
+            // BUSCAMOS EL COLOR: 
+            // Como en el "title" guardas los servicios, sacamos el primero
+            const listaServiciosDeLaCita = c.servicio ? c.servicio.split(',') : [];
+            const primerServicioNombre = listaServiciosDeLaCita[0]?.trim();
+            
+            // Buscamos en nuestra base de datos de servicios cuál tiene ese nombre para sacar su color
+            const infoServicio = dbServicios.find(ser => ser.nombre === primerServicioNombre);
+            const colorFinal = infoServicio ? infoServicio.color : '#cbd5e1'; // Gris si no encuentra
+
+            return {
+                id: d.id,
+                title: `${c.paciente}\n${c.servicio || ""}`,
+                start: c.inicio,
+                end: c.fin,
+                backgroundColor: colorFinal, // APLICAMOS EL COLOR DEL SERVICIO
+                borderColor: colorFinal,
+                extendedProps: { 
+                    paciente: c.paciente, 
+                    servicio: c.servicio, 
+                    podologo: c.podologo, 
+                    estado: c.estado 
+                }
+            };
+        }).filter(e => e.extendedProps.estado !== "Cancelada");
+        
+        calendar.removeAllEvents();
+        calendar.addEventSource(eventos);
+    });
+}
+
+    window.cargarServicioEnCampos = (n, p, t) => {
+        document.getElementById('editServNombre').value = n;
+        document.getElementById('editServPrecio').value = p;
+        document.getElementById('editServTiempo').value = t;
+    };
+
+    window.eliminarServicioBase = async (nombreId) => {
+        if(confirm(`¿Estás seguro de eliminar "${nombreId}"?`)) {
+            await deleteDoc(doc(window.dbFirestore, "config_servicios", nombreId));
+        }
+    };
+
+    // --- NAVEGACIÓN ---
+    window.switchTab = (t) => {
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        const targetView = (t === 'cobros') ? 'viewCobros' : 'view' + t.charAt(0).toUpperCase() + t.slice(1);
+        const targetTab = (t === 'cobros') ? 'tabCobros' : 'tab' + t.charAt(0).toUpperCase() + t.slice(1);
+        document.getElementById(targetView).classList.add('active');
+        document.getElementById(targetTab).classList.add('active');
+        if(t === 'agenda' && calendar) setTimeout(() => calendar.render(), 50);
+    };
+
+    // --- AGENDA ---
+    function initCalendar() {
+        calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
+            initialView: 'timeGridWeek',
+            locale: 'es',
+            firstDay: 1,
+            slotMinTime: '09:00:00',
+            slotMaxTime: '21:00:00',
+            slotDuration: '00:15:00',
+            headerToolbar: { left: 'prev,next today', center: 'title', right: 'timeGridWeek,timeGridDay' },
+            selectable: true,
+            editable: true,
+            eventClassNames: (arg) => {
+                const pod = arg.event.extendedProps.podologo;
+                return pod === 'Laura' ? ['event-laura'] : (pod === 'Irene' ? ['event-irene'] : ['event-tercero']);
+            },
+            select: (info) => {
+                selectedCitaId = null;
+                selectedSlotInfo = info;
+                abrirModalCita("", "", "Laura");
+            },
+            eventClick: (info) => {
+                selectedCitaId = info.event.id;
+                selectedSlotInfo = { startStr: info.event.startStr, endStr: info.event.endStr };
+                abrirModalCita(info.event.extendedProps.paciente, info.event.extendedProps.servicio, info.event.extendedProps.podologo);
+            }
+        });
+        calendar.render();
+    }
+
+    function abrirModalCita(pac, ser, pod) {
+        document.getElementById('modalCita').classList.remove('hidden');
+        document.getElementById('citaPaciente').value = pac;
+        document.getElementById('citaServicio').value = ser;
+        document.getElementById('citaPodologo').value = pod;
+        if(selectedCitaId) document.getElementById('areaGestionExistente').classList.remove('hidden');
+        else document.getElementById('areaGestionExistente').classList.add('hidden');
+    }
+
+    window.guardarCita = async () => {
+        const pac = document.getElementById('citaPaciente').value;
+        const serNombre = document.getElementById('citaServicio').value;
+        const pod = document.getElementById('citaPodologo').value;
+        if (!pac || !serNombre) return alert("Paciente y Servicio obligatorios");
+
+        const infoSer = dbServicios.find(s => s.nombre === serNombre) || { tiempo: 30 };
+        let inicio = selectedCitaId ? calendar.getEventById(selectedCitaId).start : new Date(selectedSlotInfo.startStr);
+        let fin = new Date(inicio.getTime() + infoSer.tiempo * 60000);
+
+        const data = {
+            paciente: pac, servicio: serNombre, podologo: pod,
+            inicio: inicio.toISOString(), fin: fin.toISOString(), estado: "Agendada"
+        };
+
+        if (selectedCitaId) await updateDoc(doc(window.dbFirestore, "citas", selectedCitaId), data);
+        else {
+            await addDoc(collection(window.dbFirestore, "citas"), data);
+            if(!dbClientes.find(c => c.Nombre === pac)) await setDoc(doc(window.dbFirestore, "clientes", pac), { Nombre: pac, deuda: 0 });
+        }
+        window.cerrarModal();
+    };
+
+ 
+    // --- COBROS ---
+    window.addItemDesdeCombo = () => {
+        const serNombre = document.getElementById('comboServiciosCobro').value;
+        const infoSer = dbServicios.find(s => s.nombre === serNombre);
+        if (infoSer) {
+            window.items.push({ desc: infoSer.nombre, precio: infoSer.precio });
+            window.renderItemsInputs();
+            window.updateView();
+        }
+    };
+
+    window.addItem = () => { window.items.push({desc: '', precio: 0}); window.renderItemsInputs(); };
+    
+    window.renderItemsInputs = () => {
+        document.getElementById('itemsContainer').innerHTML = window.items.map((it, i) => `
+            <div class="flex gap-1 mb-2">
+                <input type="text" value="${it.desc}" oninput="window.items[${i}].desc=this.value;window.updateView()" class="input-field" placeholder="Concepto">
+                <input type="number" value="${it.precio}" oninput="window.items[${i}].precio=parseFloat(this.value)||0;window.updateView()" class="input-field w-24 text-right">
+                <button onclick="window.items.splice(${i},1);window.renderItemsInputs();window.updateView()" class="text-red-400 px-2 font-bold">×</button>
+            </div>
+        `).join('');
+    };
+
+    window.updateView = () => {
+        let total = window.items.reduce((acc, it) => acc + it.precio, 0);
+        const pagado = (parseFloat(document.getElementById('pagoEfectivo').value) || 0) +
+                       (parseFloat(document.getElementById('pagoTarjeta').value) || 0) +
+                       (parseFloat(document.getElementById('pagoBizum').value) || 0) +
+                       (parseFloat(document.getElementById('pagoTransf').value) || 0);
+        const pendiente = total - pagado;
+        document.getElementById('valPendiente').innerText = pendiente.toFixed(2).replace('.', ',') + " €";
+        document.getElementById('valPendiente').className = pendiente > 0.01 ? "font-black text-red-600 text-xl tracking-tighter" : "font-black text-green-600 text-xl tracking-tighter";
+        return { total, pendiente };
+    };
+
+    window.saveInvoice = async () => {
+        const { total, pendiente } = window.updateView();
+        const nom = document.getElementById('inNombre').value;
+        if(!nom) return alert("Nombre de paciente obligatorio");
+        
+        await addDoc(collection(window.dbFirestore, "facturas"), {
+            numero: parseInt(document.getElementById('inSerie').value) || 0,
+            fecha: document.getElementById('inFecha').value,
+            nombre: nom, items: window.items, total, pendiente,
+            pagos: {
+                efectivo: parseFloat(document.getElementById('pagoEfectivo').value) || 0,
+                tarjeta: parseFloat(document.getElementById('pagoTarjeta').value) || 0,
+                bizum: parseFloat(document.getElementById('pagoBizum').value) || 0,
+                transferencia: parseFloat(document.getElementById('pagoTransf').value) || 0
+            }
+        });
+        const cli = dbClientes.find(c => c.Nombre === nom);
+        await setDoc(doc(window.dbFirestore, "clientes", nom), { Nombre: nom, deuda: (cli?.deuda || 0) + pendiente }, { merge: true });
+        alert("Cobrado correctamente.");
+        window.resetFacturacion();
+    };
+
+    window.resetFacturacion = () => {
+        document.getElementById('inNombre').value = "";
+        window.items = [];
+        ['pagoEfectivo','pagoTarjeta','pagoBizum','pagoTransf'].forEach(id => document.getElementById(id).value = 0);
+        window.renderItemsInputs();
+        window.updateView();
+    };
+
+    window.irACobrarDesdeAgenda = () => {
+        const pac = document.getElementById('citaPaciente').value;
+        const serNombre = document.getElementById('citaServicio').value;
+        const infoSer = dbServicios.find(s => s.nombre === serNombre);
+        window.switchTab('cobros');
+        window.resetFacturacion();
+        document.getElementById('inNombre').value = pac;
+        document.getElementById('inFecha').value = new Date().toISOString().split('T')[0];
+        if(infoSer) window.items = [{ desc: infoSer.nombre, precio: infoSer.precio }];
+        window.renderItemsInputs();
+        window.updateView();
+        window.cerrarModal();
+    };
+
+    // --- CLIENTES Y FACTURAS ---
+    function escucharFacturas() {
+        onSnapshot(query(collection(window.dbFirestore, "facturas"), orderBy("numero", "desc")), (s) => {
+            dbFacturas = s.docs.map(d => d.data());
+            if(dbFacturas.length > 0) document.getElementById('inSerie').value = Math.max(...dbFacturas.map(f => f.numero || 0)) + 1;
+        });
+    }
+
+    function escucharClientes() {
+        onSnapshot(collection(window.dbFirestore, "clientes"), (s) => {
+            dbClientes = s.docs.map(d => ({id: d.id, ...d.data()}));
+            document.getElementById('listaPacientes').innerHTML = dbClientes.map(c => `<option value="${c.Nombre}">`).join('');
+        });
+    }
+
+    window.verHistorialPaciente = async () => {
+        const nom = document.getElementById('buscPaciente').value;
+        const cli = dbClientes.find(c => c.Nombre === nom);
+        if(!nom) return;
+        document.getElementById('expedienteArea').classList.remove('hidden');
+        document.getElementById('totalDeudaPac').innerText = (cli?.deuda || 0).toFixed(2).replace('.', ',') + " €";
+        const q = query(collection(window.dbFirestore, "citas"), where("paciente", "==", nom));
+        const snap = await getDocs(q);
+        let hV = ""; let hC = ""; let cV = 0; let cC = 0;
+        snap.forEach(d => {
+            const c = d.data();
+            const f = new Date(c.inicio).toLocaleDateString();
+            const ui = `<div class="p-4 border rounded-xl mb-2 text-sm"><b>${f}</b> - ${c.servicio}</div>`;
+            if(c.estado === "Cancelada") { hC += ui; cC++; } else { hV += ui; cV++; }
+        });
+        document.getElementById('expCitasRealizadas').innerHTML = hV || "Sin visitas";
+        document.getElementById('expCitasCanceladas').innerHTML = hC || "Sin cancelaciones";
+        document.getElementById('countVisitas').innerText = cV;
+        document.getElementById('countCancel').innerText = cC;
+    };
+
+    window.cerrarModal = () => document.getElementById('modalCita').classList.add('hidden');
+    window.marcarComoCancelada = async () => {
+        await updateDoc(doc(window.dbFirestore, "citas", selectedCitaId), { estado: "Cancelada" });
+        window.cerrarModal();
+    };
+    window.eliminarCitaDefinitiva = async () => {
+        if(confirm("¿Eliminar para siempre?")) {
+            await deleteDoc(doc(window.dbFirestore, "citas", selectedCitaId));
+            window.cerrarModal();
+        }
+    };
+</script>
+
+<style>
+    /* --- CONFIGURACIÓN GENERAL --- */
+    body { 
+        font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; 
+        background-color: #f8fafc; 
+        color: #1e293b;
+        margin: 0;
+    }
+
+    /* --- NAVEGACIÓN Y PESTAÑAS --- */
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    .tab-btn {
+        transition: all 0.3s ease;
+        border-bottom: 4px solid transparent;
+    }
+
+    .tab-btn.active { 
+        border-bottom: 4px solid #2563eb; 
+        color: #2563eb; 
+        background-color: #f0f7ff;
+    }
+
+    /* --- CALENDARIO (FullCalendar) --- */
+    #calendar { 
+        background: white; 
+        padding: 20px; 
+        border-radius: 24px; 
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05);
+        border: 1px solid #e2e8f0;
+    }
+
+    .fc { table-layout: fixed !important; }
+
+    /* Altura de las celdas de tiempo */
+    .fc-timegrid-slot {
+        height: 3.5rem !important; 
+        border-bottom: 1px solid #f1f5f9 !important;
+    }
+
+    /* Estilo de los Eventos */
+    .fc-v-event {
+        border-radius: 10px !important;
+        border: none !important;
+        margin-right: 2px !important;
+        overflow: hidden !important; 
+        display: block !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    .fc-event-main {
+        padding: 5px 8px !important;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .fc-event-time {
+        font-size: 0.65rem !important;
+        font-weight: 800 !important;
+        text-transform: uppercase;
+        margin-bottom: 2px;
+    }
+
+    .fc-event-title {
+        font-weight: 800 !important;
+        font-size: 0.75rem !important;
+        line-height: 1.2 !important;
+        display: -webkit-box !important;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: normal !important;
+    }
+
+    /* Colores por Podólogo */
+    .event-laura { 
+        background-color: #4dd0e1 !important; 
+        border-left: 5px solid #00acc1 !important;
+        color: white !important;
+    }
+    .event-irene { 
+        background-color: #81c784 !important; 
+        border-left: 5px solid #43a047 !important;
+        color: white !important;
+    }
+    .event-tercero { 
+        background-color: #ffb74d !important; 
+        border-left: 5px solid #fb8c00 !important;
+        color: white !important;
+    }
+
+    /* Cabeceras del Calendario */
+    .fc-col-header-cell-cushion { 
+        text-decoration: none !important; 
+        color: #64748b !important; 
+        font-weight: 800 !important;
+        font-size: 0.85rem;
+        padding: 10px 0 !important;
+    }
+
+    .fc .fc-button-primary {
+        background-color: #2563eb !important;
+        border: none !important;
+        font-weight: 900 !important;
+        text-transform: uppercase !important;
+        font-size: 0.7rem !important;
+        border-radius: 12px !important;
+        padding: 8px 16px !important;
+    }
+
+    /* --- FORMULARIOS E INPUTS --- */
+    .input-field {
+        width: 100%;
+        padding: 0.85rem;
+        border: 2px solid #e2e8f0;
+        border-radius: 1rem;
+        outline: none;
+        font-weight: 600;
+        transition: all 0.2s;
+        background-color: #fcfcfc;
+    }
+
+    .input-field:focus { 
+        border-color: #3b82f6; 
+        background-color: white;
+        box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+    }
+
+    /* Quitar la flecha fea de los datalists */
+    input[list]::-webkit-calendar-picker-indicator {
+        display: none !important;
+    }
+
+    /* --- SCROLLBAR PERSONALIZADA --- */
+    .overflow-y-auto::-webkit-scrollbar {
+        width: 6px;
+    }
+
+    .overflow-y-auto::-webkit-scrollbar-thumb {
+        background-color: #cbd5e1;
+        border-radius: 10px;
+    }
+
+    .overflow-y-auto::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    /* --- UTILIDADES --- */
+    .hidden { display: none; }
+</style>
+</head>
+<body class="bg-gray-50">
+
+   <nav class="bg-white shadow-sm border-b sticky top-0 z-50">
+   <div class="max-w-7xl mx-auto flex justify-between items-center px-4">
+        <div class="flex">
+            <button onclick="switchTab('agenda')" id="tabAgenda" class="tab-btn active px-6 py-4 text-xs font-bold uppercase tracking-wider">📅 Agenda</button>
+            <button onclick="switchTab('cobros')" id="tabCobros" class="tab-btn px-6 py-4 text-xs font-bold uppercase tracking-wider">💰 Cobros y Pagos</button>
+            <button onclick="switchTab('clientes')" id="tabClientes" class="tab-btn px-6 py-4 text-xs font-bold uppercase tracking-wider">👥 Pacientes e Historial</button>
+        </div>
+
+        <div class="flex items-center gap-4">
+            <button onclick="window.abrirGestionServicios()" class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold shadow-sm transition-all flex items-center gap-2">
+                ⚙️ CONFIG. SERVICIOS
+            </button>
+            <div class="text-[10px] font-bold text-gray-400">FOOTLAB PRO v2.1</div>
+        </div>
+    </div>
+</nav>
+
+<div class="p-4 max-w-[1600px] mx-auto">
+    
+    <div id="viewAgenda" class="tab-content active">
+        <div class="flex gap-6 mb-4 bg-white p-3 rounded-lg shadow-sm">
+            <div class="flex items-center gap-2"><div class="w-4 h-4 bg-blue-500 rounded shadow-sm"></div><span class="text-xs font-bold text-gray-600">Dra. Laura</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-4 bg-green-500 rounded shadow-sm"></div><span class="text-xs font-bold text-gray-600">Dra. Irene</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-4 bg-yellow-500 rounded shadow-sm"></div><span class="text-xs font-bold text-gray-600">Podólogo 3</span></div>
+        </div>
+        <div id="calendar"></div>
+    </div>
+
+    <div id="viewCobros" class="tab-content">
+        <div class="max-w-2xl mx-auto space-y-4">
+            <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-blue-600">
+                <h2 class="font-black mb-6 text-blue-900 border-b pb-2 uppercase tracking-tighter text-xl">Registrar Cobro</h2>
+                
+                <div class="grid grid-cols-2 gap-3 mb-4">
+                    <div>
+                        <label class="text-[10px] font-bold text-gray-400">Nº REFERENCIA INTERNA</label>
+                        <input type="number" id="inSerie" class="input-field">
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-gray-400">FECHA</label>
+                        <input type="date" id="inFecha" class="input-field">
+                    </div>
+                </div>
+
+                <label class="text-[10px] font-bold text-gray-400">NOMBRE DEL PACIENTE</label>
+                <input type="text" id="inNombre" list="listaPacientes" class="input-field mb-4" placeholder="Buscar paciente para cobrar...">
+                
+                <label class="text-[10px] font-bold text-gray-400">AÑADIR DEL CATÁLOGO</label>
+                <div class="flex gap-2 mb-4">
+                    <select id="comboServiciosCobro" class="input-field flex-1"></select>
+                    <button onclick="addItemDesdeCombo()" class="bg-blue-600 text-white px-4 rounded-xl font-bold">+</button>
+                </div>
+
+                <div id="itemsContainer" class="space-y-2 mt-1"></div>
+                <button onclick="addItem()" class="w-full text-[10px] py-2 border-dashed border-2 mt-3 text-gray-400 font-bold hover:bg-gray-50">+ CONCEPTO MANUAL</button>
+
+                <div class="mt-8 p-5 bg-blue-50 rounded-xl border border-blue-100">
+                    <h3 class="text-[11px] font-black text-blue-800 uppercase mb-4 tracking-widest text-center">Detalle del Pago</h3>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div><label class="text-[9px] font-bold text-gray-500">EFECTIVO (€)</label><input type="number" id="pagoEfectivo" oninput="updateView()" class="input-field bg-white" value="0"></div>
+                        <div><label class="text-[9px] font-bold text-gray-500">TARJETA (€)</label><input type="number" id="pagoTarjeta" oninput="updateView()" class="input-field bg-white" value="0"></div>
+                        <div><label class="text-[9px] font-bold text-gray-500">BIZUM (€)</label><input type="number" id="pagoBizum" oninput="updateView()" class="input-field bg-white" value="0"></div>
+                        <div><label class="text-[9px] font-bold text-gray-500">TRANSF. (€)</label><input type="number" id="pagoTransf" oninput="updateView()" class="input-field bg-white" value="0"></div>
+                    </div>
+                    <div class="mt-6 pt-4 border-t border-blue-200 flex justify-between items-center">
+                        <span class="text-xs font-black text-red-600 uppercase">Pendiente:</span>
+                        <span id="valPendiente" class="font-black text-red-600 text-xl tracking-tighter">0,00 €</span>
+                    </div>
+                </div>
+
+                <button onclick="saveInvoice()" class="w-full bg-blue-700 text-white font-black py-4 mt-6 rounded-xl shadow-lg uppercase text-xs hover:bg-blue-800 transition">Guardar Cobro</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="viewClientes" class="tab-content space-y-6">
+        <div class="bg-white p-8 rounded-xl shadow-lg border-t-4 border-blue-600">
+            <h2 class="font-black mb-6 uppercase text-blue-900 tracking-tight">Expediente del Paciente</h2>
+            <div class="flex gap-4">
+                <input type="text" id="buscPaciente" list="listaPacientes" class="flex-1 p-4 border-2 rounded-xl" placeholder="Nombre del paciente...">
+                <button onclick="verHistorialPaciente()" class="bg-blue-600 text-white px-10 rounded-xl font-black hover:bg-blue-700 transition shadow-lg">CARGAR</button>
+            </div>
+        </div>
+
+        <div id="expedienteArea" class="hidden space-y-6">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
+                <div class="bg-white p-6 rounded-xl shadow border-t-4 border-red-500">
+                    <h3 class="text-xs font-black text-gray-400 uppercase">Deuda Pendiente</h3>
+                    <p id="totalDeudaPac" class="text-4xl font-black text-red-600">0,00 €</p>
+                </div>
+                <div class="bg-white p-6 rounded-xl shadow border-t-4 border-blue-500">
+                    <h3 class="text-xs font-black text-gray-400 uppercase">Visitas</h3>
+                    <p id="countVisitas" class="text-4xl font-black text-blue-600">0</p>
+                </div>
+                <div class="bg-white p-6 rounded-xl shadow border-t-4 border-orange-500">
+                    <h3 class="text-xs font-black text-gray-400 uppercase">Cancelaciones</h3>
+                    <p id="countCancel" class="text-4xl font-black text-orange-600">0</p>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div class="bg-white p-6 rounded-xl shadow">
+                    <h3 class="font-black text-green-700 mb-6 uppercase text-xs tracking-widest">✅ Historial Visitas</h3>
+                    <div id="expCitasRealizadas" class="space-y-3 max-h-[400px] overflow-y-auto"></div>
+                </div>
+                <div class="bg-white p-6 rounded-xl shadow">
+                    <h3 class="font-black text-red-700 mb-6 uppercase text-xs tracking-widest">❌ Cancelaciones</h3>
+                    <div id="expCitasCanceladas" class="space-y-3 max-h-[400px] overflow-y-auto"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="modalCita" class="fixed inset-0 bg-black/70 hidden z-[60] flex items-center justify-center p-4">
+    <div class="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-md">
+        <h3 class="text-2xl font-black mb-6 text-gray-800 border-b-2 pb-3">Gestionar Cita</h3>
+        
+        <div class="space-y-5">
+            <div>
+                <label class="text-[10px] font-black text-gray-400 uppercase">Paciente</label>
+                <input type="text" id="citaPaciente" list="listaPacientes" class="input-field" placeholder="Nombre completo">
+            </div>
+
+            <div>
+                <label class="text-[10px] font-black text-gray-400 uppercase">Podólogo Responsable</label>
+                <select id="citaPodologo" class="input-field">
+                    <option value="Laura">Dra. Laura (Azul)</option>
+                    <option value="Irene">Dra. Irene (Verde)</option>
+                    <option value="Tercero">Podólogo 3 (Amarillo)</option>
+                </select>
+            </div>
+
+            <div>
+                <label class="text-[10px] font-black text-gray-400 uppercase">Servicio</label>
+                <select id="citaServicio" class="input-field"></select>
+            </div>
+
+            <div class="flex gap-4 pt-4">
+                <button onclick="guardarCita()" class="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest shadow-lg">Confirmar</button>
+                <button onclick="cerrarModal()" class="px-6 bg-gray-100 text-gray-500 rounded-2xl font-bold">Salir</button>
+            </div>
+            
+            <div id="areaGestionExistente" class="hidden border-t pt-4 space-y-2">
+                <button onclick="irACobrarDesdeAgenda()" class="w-full bg-orange-500 text-white py-3 rounded-xl font-black uppercase text-[10px]">💰 COBRAR VISITA</button>
+                <button onclick="marcarComoCancelada()" class="w-full bg-red-50 text-red-600 py-3 rounded-xl font-black uppercase text-[10px]">⚠️ CANCELAR CITA</button>
+                <button onclick="eliminarCitaDefinitiva()" class="w-full text-gray-400 text-[10px] underline">Eliminar registro</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="modalGestionServicios" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl">
+        <div class="bg-purple-600 p-6 text-white flex justify-between items-center">
+            <h3 class="font-black uppercase tracking-tighter text-xl">Mis Servicios</h3>
+            <button onclick="document.getElementById('modalGestionServicios').classList.add('hidden')" class="text-white font-bold text-2xl">&times;</button>
+        </div>
+        <div class="p-6">
+            <div class="space-y-3 mb-6 bg-gray-50 p-4 rounded-2xl border-2 border-dashed border-gray-200">
+                <input type="text" id="editServNombre" placeholder="Nombre" class="input-field text-sm">
+                <div class="flex gap-2">
+                    <input type="number" id="editServPrecio" placeholder="Precio €" class="input-field text-sm w-1/3">
+                    <input type="number" id="editServTiempo" placeholder="Minutos" class="input-field text-sm w-1/3">
+                    <input type="color" id="editServColor" value="#60a5fa" class="w-1/3 h-12 rounded-xl border-2 p-1 cursor-pointer">
+                </div>
+                <button onclick="window.guardarServicioDesdeGestion()" class="w-full bg-purple-600 text-white p-3 rounded-xl font-black uppercase text-xs">Guardar Servicio</button>
+            </div>
+            <div id="listaServiciosAdmin" class="max-h-60 overflow-y-auto space-y-2"></div>
+        </div>
+    </div>
+</div>
+
+<datalist id="listaPacientes"></datalist>
+
+</body>
+</html>
