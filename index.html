@@ -25,7 +25,6 @@
     const app = initializeApp(firebaseConfig);
     window.dbFirestore = getFirestore(app);
 
-    // --- VARIABLES DE ESTADO ---
     let calendar;
     let selectedCitaId = null;
     let dbClientes = [];
@@ -42,12 +41,9 @@
         escucharFacturas();
     });
 
-    // --- GESTIÓN DE SERVICIOS (CATÁLOGO) ---
     function escucharServicios() {
         onSnapshot(collection(window.dbFirestore, "config_servicios"), (s) => {
             dbServicios = s.docs.map(d => ({ id: d.id, ...d.data() }));
-            
-            // Actualizar desplegables
             const combos = ['citaServicio', 'comboServiciosCobro'];
             combos.forEach(id => {
                 const el = document.getElementById(id);
@@ -56,8 +52,6 @@
                         dbServicios.map(ser => `<option value="${ser.nombre}">${ser.nombre} (${ser.precio}€ - ${ser.tiempo}min)</option>`).join('');
                 }
             });
-
-            // Si el modal de gestión está abierto, refrescar la lista interna
             if(!document.getElementById('modalGestionServicios').classList.contains('hidden')) {
                 renderizarListaAdminServicios();
             }
@@ -69,94 +63,84 @@
         renderizarListaAdminServicios();
     };
 
-    // Busca esta función en tu script y asegúrate de que el botón lápiz sea así:
-function renderizarListaAdminServicios() {
-    const contenedor = document.getElementById('listaServiciosAdmin');
-    if (!contenedor) return;
-    contenedor.innerHTML = dbServicios.map(s => `
-        <div class="flex justify-between items-center p-3 bg-white border-2 rounded-xl mb-2" style="border-left: 8px solid ${s.color || '#ddd'}">
-            <div>
-                <div class="font-bold text-gray-800 text-sm">${s.nombre}</div>
-                <div class="text-[10px] text-gray-400 font-bold">${s.precio}€ | ${s.tiempo} min</div>
+    function renderizarListaAdminServicios() {
+        const contenedor = document.getElementById('listaServiciosAdmin');
+        if (!contenedor) return;
+        contenedor.innerHTML = dbServicios.map(s => `
+            <div class="flex justify-between items-center p-3 bg-white border-2 rounded-xl mb-2" style="border-left: 8px solid ${s.color || '#ddd'}">
+                <div>
+                    <div class="font-bold text-gray-800 text-sm">${s.nombre}</div>
+                    <div class="text-[10px] text-gray-400 font-bold">${s.precio}€ | ${s.tiempo} min</div>
+                </div>
+                <div class="flex gap-1">
+                    <button onclick="window.cargarServicioEnCampos('${s.nombre}', ${s.precio}, ${s.tiempo}, '${s.color}')" class="p-2 text-blue-500 hover:bg-blue-50 rounded-lg">✏️</button>
+                    <button onclick="window.eliminarServicioBase('${s.nombre}')" class="p-2 text-red-500 hover:bg-red-50 rounded-lg">🗑️</button>
+                </div>
             </div>
-            <div class="flex gap-1">
-                <button onclick="window.cargarServicioEnCampos('${s.nombre}', ${s.precio}, ${s.tiempo}, '${s.color}')" class="p-2 text-blue-500 hover:bg-blue-50 rounded-lg">✏️</button>
-                <button onclick="window.eliminarServicioBase('${s.nombre}')" class="p-2 text-red-500 hover:bg-red-50 rounded-lg">🗑️</button>
-            </div>
-        </div>
-    `).join('');
-}
-
-  // Actualizamos el guardado para incluir el color
-window.guardarServicioDesdeGestion = async () => {
-    const nom = document.getElementById('editServNombre').value.trim();
-    const pre = parseFloat(document.getElementById('editServPrecio').value);
-    const tie = parseInt(document.getElementById('editServTiempo').value);
-    const col = document.getElementById('editServColor').value; // Captura el color
-
-    if (nom && !isNaN(pre) && !isNaN(tie)) {
-        await setDoc(doc(window.dbFirestore, "config_servicios", nom), { 
-            nombre: nom, 
-            precio: pre, 
-            tiempo: tie,
-            color: col // Guardamos el color
-        });
-        document.getElementById('editServNombre').value = "";
-        document.getElementById('editServPrecio').value = "";
-        document.getElementById('editServTiempo').value = "";
-        alert("Servicio guardado con color");
+        `).join('');
     }
-};
 
-// Cargamos el color en el selector al editar (cuando pulsas el lápiz)
-window.cargarServicioEnCampos = (n, p, t, c) => {
-    document.getElementById('editServNombre').value = n;
-    document.getElementById('editServPrecio').value = p;
-    document.getElementById('editServTiempo').value = t;
-    document.getElementById('editServColor').value = c || "#60a5fa"; // Color por defecto si no tiene
-};
+    window.guardarServicioDesdeGestion = async () => {
+        const nom = document.getElementById('editServNombre').value.trim();
+        const pre = parseFloat(document.getElementById('editServPrecio').value);
+        const tie = parseInt(document.getElementById('editServTiempo').value);
+        const col = document.getElementById('editServColor').value;
 
-// IMPORTANTE: Modificamos la lógica de la agenda para aplicar el color del servicio
-function escucharCitas() {
-    onSnapshot(collection(window.dbFirestore, "citas"), (s) => {
-        const eventos = s.docs.map(d => {
-            const c = d.data();
-            
-            // BUSCAMOS EL COLOR: 
-            // Como en el "title" guardas los servicios, sacamos el primero
-            const listaServiciosDeLaCita = c.servicio ? c.servicio.split(',') : [];
-            const primerServicioNombre = listaServiciosDeLaCita[0]?.trim();
-            
-            // Buscamos en nuestra base de datos de servicios cuál tiene ese nombre para sacar su color
-            const infoServicio = dbServicios.find(ser => ser.nombre === primerServicioNombre);
-            const colorFinal = infoServicio ? infoServicio.color : '#cbd5e1'; // Gris si no encuentra
+        if (nom && !isNaN(pre) && !isNaN(tie)) {
+            await setDoc(doc(window.dbFirestore, "config_servicios", nom), { 
+                nombre: nom, precio: pre, tiempo: tie, color: col 
+            });
+            document.getElementById('editServNombre').value = "";
+            document.getElementById('editServPrecio').value = "";
+            document.getElementById('editServTiempo').value = "";
+            alert("Servicio guardado");
+        }
+    };
 
-            return {
-                id: d.id,
-                title: `${c.paciente}\n${c.servicio || ""}`,
-                start: c.inicio,
-                end: c.fin,
-                backgroundColor: colorFinal, // APLICAMOS EL COLOR DEL SERVICIO
-                borderColor: colorFinal,
-                extendedProps: { 
-                    paciente: c.paciente, 
-                    servicio: c.servicio, 
-                    podologo: c.podologo, 
-                    estado: c.estado 
-                }
-            };
-        }).filter(e => e.extendedProps.estado !== "Cancelada");
-        
-        calendar.removeAllEvents();
-        calendar.addEventSource(eventos);
-    });
-}
-
-    window.cargarServicioEnCampos = (n, p, t) => {
+    window.cargarServicioEnCampos = (n, p, t, c) => {
         document.getElementById('editServNombre').value = n;
         document.getElementById('editServPrecio').value = p;
         document.getElementById('editServTiempo').value = t;
+        document.getElementById('editServColor').value = c || "#60a5fa";
     };
+
+    function escucharCitas() {
+        onSnapshot(collection(window.dbFirestore, "citas"), (s) => {
+            const eventos = s.docs.map(d => {
+                const c = d.data();
+                const nombreServicio = c.servicio ? c.servicio.split(',')[0].trim() : "";
+                const servicioEncontrado = dbServicios.find(ser => ser.nombre === nombreServicio);
+                const colorServicio = servicioEncontrado ? servicioEncontrado.color : '#e2e8f0';
+
+                let colorPodologo = '#94a3b8';
+                if (c.podologo === 'Laura') colorPodologo = '#3b82f6';
+                if (c.podologo === 'Irene') colorPodologo = '#22c55e';
+                if (c.podologo === 'Tercero') colorPodologo = '#eab308';
+
+                return {
+                    id: d.id,
+                    title: `${c.paciente}\n${c.servicio || ""}`,
+                    start: c.inicio,
+                    end: c.fin,
+                    backgroundColor: colorServicio, 
+                    borderColor: 'transparent',
+                    textColor: '#1e293b',
+                    extendedProps: { 
+                        colorPodologo: colorPodologo, 
+                        podologo: c.podologo,
+                        estado: c.estado,
+                        paciente: c.paciente,
+                        servicio: c.servicio
+                    }
+                };
+            }).filter(e => e.extendedProps.estado !== "Cancelada");
+            
+            if (calendar) {
+                calendar.removeAllEvents();
+                calendar.addEventSource(eventos);
+            }
+        });
+    }
 
     window.eliminarServicioBase = async (nombreId) => {
         if(confirm(`¿Estás seguro de eliminar "${nombreId}"?`)) {
@@ -164,7 +148,6 @@ function escucharCitas() {
         }
     };
 
-    // --- NAVEGACIÓN ---
     window.switchTab = (t) => {
         document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -175,7 +158,6 @@ function escucharCitas() {
         if(t === 'agenda' && calendar) setTimeout(() => calendar.render(), 50);
     };
 
-    // --- AGENDA ---
     function initCalendar() {
         calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
             initialView: 'timeGridWeek',
@@ -187,9 +169,16 @@ function escucharCitas() {
             headerToolbar: { left: 'prev,next today', center: 'title', right: 'timeGridWeek,timeGridDay' },
             selectable: true,
             editable: true,
-            eventClassNames: (arg) => {
-                const pod = arg.event.extendedProps.podologo;
-                return pod === 'Laura' ? ['event-laura'] : (pod === 'Irene' ? ['event-irene'] : ['event-tercero']);
+            eventDidMount: function(info) {
+                const colorEspecialista = info.event.extendedProps.colorPodologo || '#94a3b8';
+                const colorServicio = info.event.backgroundColor || '#e2e8f0';
+
+                info.el.style.setProperty('border-left', `6px solid ${colorEspecialista}`, 'important');
+                info.el.style.setProperty('background-color', colorServicio, 'important');
+                info.el.style.setProperty('color', '#1e293b', 'important');
+                info.el.style.setProperty('border-top', 'none', 'important');
+                info.el.style.setProperty('border-right', 'none', 'important');
+                info.el.style.setProperty('border-bottom', 'none', 'important');
             },
             select: (info) => {
                 selectedCitaId = null;
@@ -207,9 +196,9 @@ function escucharCitas() {
 
     function abrirModalCita(pac, ser, pod) {
         document.getElementById('modalCita').classList.remove('hidden');
-        document.getElementById('citaPaciente').value = pac;
-        document.getElementById('citaServicio').value = ser;
-        document.getElementById('citaPodologo').value = pod;
+        document.getElementById('citaPaciente').value = pac || "";
+        document.getElementById('citaServicio').value = ser || "";
+        document.getElementById('citaPodologo').value = pod || "Laura";
         if(selectedCitaId) document.getElementById('areaGestionExistente').classList.remove('hidden');
         else document.getElementById('areaGestionExistente').classList.add('hidden');
     }
@@ -219,16 +208,10 @@ function escucharCitas() {
         const serNombre = document.getElementById('citaServicio').value;
         const pod = document.getElementById('citaPodologo').value;
         if (!pac || !serNombre) return alert("Paciente y Servicio obligatorios");
-
         const infoSer = dbServicios.find(s => s.nombre === serNombre) || { tiempo: 30 };
         let inicio = selectedCitaId ? calendar.getEventById(selectedCitaId).start : new Date(selectedSlotInfo.startStr);
         let fin = new Date(inicio.getTime() + infoSer.tiempo * 60000);
-
-        const data = {
-            paciente: pac, servicio: serNombre, podologo: pod,
-            inicio: inicio.toISOString(), fin: fin.toISOString(), estado: "Agendada"
-        };
-
+        const data = { paciente: pac, servicio: serNombre, podologo: pod, inicio: inicio.toISOString(), fin: fin.toISOString(), estado: "Agendada" };
         if (selectedCitaId) await updateDoc(doc(window.dbFirestore, "citas", selectedCitaId), data);
         else {
             await addDoc(collection(window.dbFirestore, "citas"), data);
@@ -237,8 +220,6 @@ function escucharCitas() {
         window.cerrarModal();
     };
 
- 
-    // --- COBROS ---
     window.addItemDesdeCombo = () => {
         const serNombre = document.getElementById('comboServiciosCobro').value;
         const infoSer = dbServicios.find(s => s.nombre === serNombre);
@@ -250,15 +231,13 @@ function escucharCitas() {
     };
 
     window.addItem = () => { window.items.push({desc: '', precio: 0}); window.renderItemsInputs(); };
-    
     window.renderItemsInputs = () => {
         document.getElementById('itemsContainer').innerHTML = window.items.map((it, i) => `
             <div class="flex gap-1 mb-2">
                 <input type="text" value="${it.desc}" oninput="window.items[${i}].desc=this.value;window.updateView()" class="input-field" placeholder="Concepto">
                 <input type="number" value="${it.precio}" oninput="window.items[${i}].precio=parseFloat(this.value)||0;window.updateView()" class="input-field w-24 text-right">
                 <button onclick="window.items.splice(${i},1);window.renderItemsInputs();window.updateView()" class="text-red-400 px-2 font-bold">×</button>
-            </div>
-        `).join('');
+            </div>`).join('');
     };
 
     window.updateView = () => {
@@ -269,7 +248,6 @@ function escucharCitas() {
                        (parseFloat(document.getElementById('pagoTransf').value) || 0);
         const pendiente = total - pagado;
         document.getElementById('valPendiente').innerText = pendiente.toFixed(2).replace('.', ',') + " €";
-        document.getElementById('valPendiente').className = pendiente > 0.01 ? "font-black text-red-600 text-xl tracking-tighter" : "font-black text-green-600 text-xl tracking-tighter";
         return { total, pendiente };
     };
 
@@ -277,7 +255,6 @@ function escucharCitas() {
         const { total, pendiente } = window.updateView();
         const nom = document.getElementById('inNombre').value;
         if(!nom) return alert("Nombre de paciente obligatorio");
-        
         await addDoc(collection(window.dbFirestore, "facturas"), {
             numero: parseInt(document.getElementById('inSerie').value) || 0,
             fecha: document.getElementById('inFecha').value,
@@ -317,7 +294,6 @@ function escucharCitas() {
         window.cerrarModal();
     };
 
-    // --- CLIENTES Y FACTURAS ---
     function escucharFacturas() {
         onSnapshot(query(collection(window.dbFirestore, "facturas"), orderBy("numero", "desc")), (s) => {
             dbFacturas = s.docs.map(d => d.data());
@@ -365,8 +341,30 @@ function escucharCitas() {
         }
     };
 </script>
-
 <style>
+    /* Estilo para la caja del evento */
+.fc-event {
+    border: none !important;
+    padding-left: 5px !important; /* Espacio para la barra */
+    overflow: hidden;
+}
+
+/* Creamos la franja lateral usando el color del podólogo */
+.fc-event-main {
+    position: relative;
+    padding-left: 8px !important;
+}
+
+/* La "magia" del borde izquierdo */
+.fc-event-main::before {
+    content: "";
+    position: absolute;
+    left: -5px;
+    top: -2px;
+    bottom: -2px;
+    width: 6px; /* Grosor de la línea del especialista */
+    background-color: var(--color-podologo, #ccc); /* Se llenará con JS */
+}
     /* --- CONFIGURACIÓN GENERAL --- */
     body { 
         font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; 
