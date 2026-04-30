@@ -149,15 +149,21 @@
     };
 
     window.switchTab = (t) => {
-        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        const targetView = (t === 'cobros') ? 'viewCobros' : 'view' + t.charAt(0).toUpperCase() + t.slice(1);
-        const targetTab = (t === 'cobros') ? 'tabCobros' : 'tab' + t.charAt(0).toUpperCase() + t.slice(1);
-        document.getElementById(targetView).classList.add('active');
-        document.getElementById(targetTab).classList.add('active');
-        if(t === 'agenda' && calendar) setTimeout(() => calendar.render(), 50);
-    };
-
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    
+    // Esta lógica busca el ID del div (viewAgenda, viewCobros, viewClientes, viewReportes)
+    const targetView = 'view' + t.charAt(0).toUpperCase() + t.slice(1);
+    const targetTab = 'tab' + t.charAt(0).toUpperCase() + t.slice(1);
+    
+    const viewEl = document.getElementById(targetView);
+    const tabEl = document.getElementById(targetTab);
+    
+    if(viewEl) viewEl.classList.add('active');
+    if(tabEl) tabEl.classList.add('active');
+    
+    if(t === 'agenda' && calendar) setTimeout(() => calendar.render(), 50);
+};
     function initCalendar() {
         calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
             initialView: 'timeGridWeek',
@@ -254,56 +260,71 @@
 window.saveInvoice = () => {
         const nom = document.getElementById('inNombre').value;
         if(!nom) return alert("Nombre de paciente obligatorio");
-        
-        // Abrimos el nuevo modal de decisión
         document.getElementById('modalDecisionFactura').classList.remove('hidden');
     };
 
-    // Esta es la función que hace el trabajo real
     window.ejecutarGuardado = async (conFactura) => {
-        // Cerramos el modal de decisión
-        document.getElementById('modalDecisionFactura').classList.add('hidden');
-        
-        const { total, pendiente } = window.updateView();
-        const nom = document.getElementById('inNombre').value;
-        const fecha = document.getElementById('inFecha').value;
-        const serie = parseInt(document.getElementById('inSerie').value) || 0;
+    document.getElementById('modalDecisionFactura').classList.add('hidden');
+    
+    // 1. Obtener datos básicos
+    const { total, pendiente } = window.updateView();
+    const nom = document.getElementById('inNombre').value; // Asegúrate que el ID sea inNombre o inPaciente
+    const fecha = document.getElementById('inFecha').value;
+    const serie = parseInt(document.getElementById('inSerie').value) || 0;
 
-        try {
-            // 1. Si el usuario eligió "Hacer Factura"
-            if (conFactura) {
-                await addDoc(collection(window.dbFirestore, "facturas"), {
-                    numero: serie,
-                    fecha: fecha,
-                    nombre: nom, 
-                    items: window.items, 
-                    total, 
-                    pendiente,
-                    pagos: {
-                        efectivo: parseFloat(document.getElementById('pagoEfectivo').value) || 0,
-                        tarjeta: parseFloat(document.getElementById('pagoTarjeta').value) || 0,
-                        bizum: parseFloat(document.getElementById('pagoBizum').value) || 0,
-                        transferencia: parseFloat(document.getElementById('pagoTransf').value) || 0
-                    }
-                });
-            }
-
-            // 2. Actualizar deuda del cliente (SE HACE SIEMPRE)
-            const cli = dbClientes.find(c => c.Nombre === nom);
-            await setDoc(doc(window.dbFirestore, "clientes", nom), { 
-                Nombre: nom, 
-                deuda: (cli?.deuda || 0) + pendiente 
-            }, { merge: true });
-
-            alert(conFactura ? "Factura y pago guardados" : "Pago registrado sin factura");
-            window.resetFacturacion();
-
-        } catch (error) {
-            console.error("Error al guardar:", error);
-            alert("Hubo un error al guardar los datos.");
-        }
+    // 2. Capturar los pagos (Aseguramos que sean números para el reporte)
+    const pagosData = {
+        efectivo: Number(document.getElementById('pagoEfectivo').value) || 0,
+        tarjeta: Number(document.getElementById('pagoTarjeta').value) || 0,
+        bizum: Number(document.getElementById('pagoBizum').value) || 0,
+        transferencia: Number(document.getElementById('pagoTransf').value) || 0
     };
 
+    const pagadoHoy = pagosData.efectivo + pagosData.tarjeta + pagosData.bizum + pagosData.transferencia;
+
+    try {
+        // 3. GUARDAR SIEMPRE EN LA COLECCIÓN "FACTURAS" (Para que el reporte funcione)
+        // Guardamos tanto si es factura legal como si es solo registro de pago
+        await addDoc(collection(window.dbFirestore, "facturas"), {
+            numero: conFactura ? serie : "Recibo-" + Date.now().toString().slice(-4),
+            fecha: fecha,
+            nombre: nom, 
+            items: window.items || window.carrito, 
+            total: total, 
+            pendiente: pendiente,
+            pagos: pagosData,
+            esFacturaLegal: conFactura // Para saber si generaste número de serie o no
+        });
+
+        // 4. --- LÓGICA DE SALDO DEL CLIENTE ---
+        const cli = dbClientes.find(c => c.Nombre === nom);
+        let deudaAnterior = cli?.deuda || 0;
+        let nuevaDeuda;
+
+        // Si el primer item es "Pago deuda", restamos lo pagado hoy
+        if (window.items && window.items.length > 0 && window.items[0].desc.includes("Pago deuda")) {
+            nuevaDeuda = deudaAnterior - pagadoHoy;
+        } else {
+            // Si es servicio nuevo, sumamos lo que quedó sin pagar hoy
+            nuevaDeuda = deudaAnterior + pendiente;
+        }
+
+        if (nuevaDeuda < 0) nuevaDeuda = 0;
+
+        // Actualizamos la ficha del cliente
+        await setDoc(doc(window.dbFirestore, "clientes", nom), { 
+            Nombre: nom, 
+            deuda: nuevaDeuda 
+        }, { merge: true });
+
+        alert(conFactura ? "Factura legal y pago registrados" : "Pago registrado correctamente (sin factura)");
+        window.resetFacturacion();
+
+    } catch (error) {
+        console.error("Error completo al guardar:", error);
+        alert("Error al guardar los datos. Revisa la consola.");
+    }
+};
     window.resetFacturacion = () => {
         document.getElementById('inNombre').value = "";
         window.items = [];
@@ -337,15 +358,60 @@ window.saveInvoice = () => {
         onSnapshot(collection(window.dbFirestore, "clientes"), (s) => {
             dbClientes = s.docs.map(d => ({id: d.id, ...d.data()}));
             document.getElementById('listaPacientes').innerHTML = dbClientes.map(c => `<option value="${c.Nombre}">`).join('');
+            renderizarListaDeudores(); // Actualizar lista de deudores cada vez que cambien los clientes
         });
     }
+
+    // --- NUEVA FUNCIÓN: LISTADO DE DEUDORES ---
+    function renderizarListaDeudores() {
+        const contenedor = document.getElementById('listaDeudoresContainer');
+        const deudores = dbClientes.filter(c => (c.deuda || 0) > 0);
+        
+        if (deudores.length === 0) {
+            contenedor.innerHTML = '<div class="text-center p-4 text-gray-400 text-xs font-bold">🎉 TODOS LOS PACIENTES ESTÁN AL DÍA</div>';
+            return;
+        }
+
+        contenedor.innerHTML = deudores.map(c => `
+            <div class="flex justify-between items-center p-3 bg-red-50 border border-red-100 rounded-xl mb-2">
+                <div class="flex-1">
+                    <div class="font-black text-gray-800 text-xs uppercase">${c.Nombre}</div>
+                    <div class="text-[10px] text-red-500 font-bold">PENDIENTE: ${c.deuda.toFixed(2)}€</div>
+                </div>
+                <button onclick="window.prepararCobroDeuda('${c.Nombre}', ${c.deuda})" class="bg-red-600 text-white text-[9px] px-3 py-2 rounded-lg font-black hover:bg-red-700 transition">
+                    COBRAR DEUDA
+                </button>
+            </div>
+        `).join('');
+    }
+
+    window.prepararCobroDeuda = (nombre, deuda) => {
+        window.resetFacturacion();
+        document.getElementById('inNombre').value = nombre;
+        document.getElementById('inFecha').value = new Date().toISOString().split('T')[0];
+        window.items = [{ desc: `Pago deuda pendiente`, precio: deuda }];
+        window.renderItemsInputs();
+        window.updateView();
+        // Hacemos scroll hacia arriba para que vea el formulario de cobro
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
 
     window.verHistorialPaciente = async () => {
         const nom = document.getElementById('buscPaciente').value;
         const cli = dbClientes.find(c => c.Nombre === nom);
         if(!nom) return;
+        
         document.getElementById('expedienteArea').classList.remove('hidden');
         document.getElementById('totalDeudaPac').innerText = (cli?.deuda || 0).toFixed(2).replace('.', ',') + " €";
+        
+        // --- INDICADOR VISUAL AL DÍA / DEUDA ---
+        const statusBadge = document.getElementById('statusBadge');
+        if((cli?.deuda || 0) <= 0) {
+            statusBadge.innerHTML = '<span class="bg-green-100 text-green-700 px-4 py-1 rounded-full text-[10px] font-black uppercase">✅ PACIENTE AL DÍA</span>';
+        } else {
+            statusBadge.innerHTML = '<span class="bg-red-100 text-red-700 px-4 py-1 rounded-full text-[10px] font-black uppercase">⚠️ TIENE DEUDAS PENDIENTES</span>';
+        }
+
         const q = query(collection(window.dbFirestore, "citas"), where("paciente", "==", nom));
         const snap = await getDocs(q);
         let hV = ""; let hC = ""; let cV = 0; let cC = 0;
@@ -372,55 +438,121 @@ window.saveInvoice = () => {
             window.cerrarModal();
         }
     };
+    window.generarReporte = async () => {
+    const inicio = document.getElementById('repFechaInicio').value;
+    const fin = document.getElementById('repFechaFin').value;
+
+    if (!inicio || !fin) return alert("Por favor, selecciona ambas fechas.");
+
+    try {
+        const colRef = collection(window.dbFirestore, "facturas");
+        const q = query(colRef, 
+                        where("fecha", ">=", inicio), 
+                        where("fecha", "<=", fin));
+        
+        console.log("Buscando entre:", inicio, "y", fin); // Chivato 1: Verifica fechas en consola
+        
+        const snap = await getDocs(q);
+        let totales = { efectivo: 0, tarjeta: 0, bizum: 0, transferencia: 0 };
+        window.datosExcel = [];
+
+        if (snap.empty) {
+            console.log("La consulta volvió vacía."); // Chivato extra
+            alert("No se encontraron pagos en este rango de fechas.");
+            document.getElementById('resultadosReporte').classList.add('hidden');
+            return;
+        }
+
+        snap.forEach(doc => {
+            const data = doc.data();
+            console.log("Factura encontrada en DB:", data); // Chivato 2: Verás qué datos llegan
+            
+            const p = data.pagos || {};
+            
+            // Sumamos asegurando decimales
+            totales.efectivo += (parseFloat(p.efectivo) || 0);
+            totales.tarjeta += (parseFloat(p.tarjeta) || 0);
+            totales.bizum += (parseFloat(p.bizum) || 0);
+            totales.transferencia += (parseFloat(p.transferencia) || 0);
+
+            // Preparamos datos para el Excel
+            window.datosExcel.push({
+                Fecha: data.fecha,
+                Paciente: data.nombre || "N/A",
+                N_Ref: data.numero || "Pago",
+                Total: data.total || 0,
+                Efectivo: p.efectivo || 0,
+                Tarjeta: p.tarjeta || 0,
+                Bizum: p.bizum || 0,
+                Transferencia: p.transferencia || 0
+            });
+        });
+
+        // Actualizamos la pantalla con formato europeo (coma para decimales)
+        document.getElementById('totalRepEfectivo').innerText = totales.efectivo.toFixed(2).replace('.', ',') + " €";
+        document.getElementById('totalRepTarjeta').innerText = totales.tarjeta.toFixed(2).replace('.', ',') + " €";
+        document.getElementById('totalRepBizum').innerText = totales.bizum.toFixed(2).replace('.', ',') + " €";
+        document.getElementById('totalRepTransf').innerText = totales.transferencia.toFixed(2).replace('.', ',') + " €";
+        
+        const sumaTodo = totales.efectivo + totales.tarjeta + totales.bizum + totales.transferencia;
+        document.getElementById('totalRepGeneral').innerText = sumaTodo.toFixed(2).replace('.', ',') + " €";
+        
+        document.getElementById('resultadosReporte').classList.remove('hidden');
+
+    } catch (error) {
+        console.error("Error al generar reporte:", error);
+        alert("Error de conexión. Mira la consola (F12).");
+    }
+};
+
+window.exportarExcel = () => {
+    if (!window.datosExcel || window.datosExcel.length === 0) return;
+    
+    const ws = XLSX.utils.json_to_sheet(window.datosExcel);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Ingresos");
+    
+    const fecha = new Date().toISOString().split('T')[0];
+    XLSX.writeFile(wb, `Reporte_Ingresos_Footlab_${fecha}.xlsx`);
+};
 </script>
 <style>
     /* Estilo para la caja del evento */
 .fc-event {
     border: none !important;
-    padding-left: 5px !important; /* Espacio para la barra */
+    padding-left: 5px !important; 
     overflow: hidden;
 }
-
-/* Creamos la franja lateral usando el color del podólogo */
 .fc-event-main {
     position: relative;
     padding-left: 8px !important;
 }
-
-/* La "magia" del borde izquierdo */
 .fc-event-main::before {
     content: "";
     position: absolute;
     left: -5px;
     top: -2px;
     bottom: -2px;
-    width: 6px; /* Grosor de la línea del especialista */
-    background-color: var(--color-podologo, #ccc); /* Se llenará con JS */
+    width: 6px; 
+    background-color: var(--color-podologo, #ccc); 
 }
-    /* --- CONFIGURACIÓN GENERAL --- */
     body { 
         font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; 
         background-color: #f8fafc; 
         color: #1e293b;
         margin: 0;
     }
-
-    /* --- NAVEGACIÓN Y PESTAÑAS --- */
     .tab-content { display: none; }
     .tab-content.active { display: block; }
-
     .tab-btn {
         transition: all 0.3s ease;
         border-bottom: 4px solid transparent;
     }
-
     .tab-btn.active { 
         border-bottom: 4px solid #2563eb; 
         color: #2563eb; 
         background-color: #f0f7ff;
     }
-
-    /* --- CALENDARIO (FullCalendar) --- */
     #calendar { 
         background: white; 
         padding: 20px; 
@@ -428,16 +560,11 @@ window.saveInvoice = () => {
         box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05);
         border: 1px solid #e2e8f0;
     }
-
     .fc { table-layout: fixed !important; }
-
-    /* Altura de las celdas de tiempo */
     .fc-timegrid-slot {
         height: 3.5rem !important; 
         border-bottom: 1px solid #f1f5f9 !important;
     }
-
-    /* Estilo de los Eventos */
     .fc-v-event {
         border-radius: 10px !important;
         border: none !important;
@@ -446,70 +573,35 @@ window.saveInvoice = () => {
         display: block !important;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-
     .fc-event-main {
         padding: 5px 8px !important;
         height: 100%;
         display: flex;
         flex-direction: column;
     }
-
     .fc-event-time {
         font-size: 0.65rem !important;
         font-weight: 800 !important;
         text-transform: uppercase;
         margin-bottom: 2px;
     }
-
     .fc-event-title {
         font-weight: 800 !important;
         font-size: 0.75rem !important;
         line-height: 1.2 !important;
-        display: -webkit-box !important;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: normal !important;
     }
-
-    /* Colores por Podólogo */
-    .event-laura { 
-        background-color: #4dd0e1 !important; 
-        border-left: 5px solid #00acc1 !important;
-        color: white !important;
-    }
-    .event-irene { 
-        background-color: #81c784 !important; 
-        border-left: 5px solid #43a047 !important;
-        color: white !important;
-    }
-    .event-tercero { 
-        background-color: #ffb74d !important; 
-        border-left: 5px solid #fb8c00 !important;
-        color: white !important;
-    }
-
-    /* Cabeceras del Calendario */
     .fc-col-header-cell-cushion { 
         text-decoration: none !important; 
         color: #64748b !important; 
         font-weight: 800 !important;
         font-size: 0.85rem;
-        padding: 10px 0 !important;
     }
-
     .fc .fc-button-primary {
         background-color: #2563eb !important;
         border: none !important;
         font-weight: 900 !important;
-        text-transform: uppercase !important;
-        font-size: 0.7rem !important;
         border-radius: 12px !important;
-        padding: 8px 16px !important;
     }
-
-    /* --- FORMULARIOS E INPUTS --- */
     .input-field {
         width: 100%;
         padding: 0.85rem;
@@ -520,51 +612,30 @@ window.saveInvoice = () => {
         transition: all 0.2s;
         background-color: #fcfcfc;
     }
-
     .input-field:focus { 
         border-color: #3b82f6; 
         background-color: white;
         box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
     }
-
-    /* Quitar la flecha fea de los datalists */
-    input[list]::-webkit-calendar-picker-indicator {
-        display: none !important;
-    }
-
-    /* --- SCROLLBAR PERSONALIZADA --- */
-    .overflow-y-auto::-webkit-scrollbar {
-        width: 6px;
-    }
-
-    .overflow-y-auto::-webkit-scrollbar-thumb {
-        background-color: #cbd5e1;
-        border-radius: 10px;
-    }
-
-    .overflow-y-auto::-webkit-scrollbar-track {
-        background: transparent;
-    }
-
-    /* --- UTILIDADES --- */
+    input[list]::-webkit-calendar-picker-indicator { display: none !important; }
     .hidden { display: none; }
 </style>
 </head>
 <body class="bg-gray-50">
 
-   <nav class="bg-white shadow-sm border-b sticky top-0 z-50">
+<nav class="bg-white shadow-sm border-b sticky top-0 z-50">
    <div class="max-w-7xl mx-auto flex justify-between items-center px-4">
         <div class="flex">
             <button onclick="switchTab('agenda')" id="tabAgenda" class="tab-btn active px-6 py-4 text-xs font-bold uppercase tracking-wider">📅 Agenda</button>
             <button onclick="switchTab('cobros')" id="tabCobros" class="tab-btn px-6 py-4 text-xs font-bold uppercase tracking-wider">💰 Cobros y Pagos</button>
             <button onclick="switchTab('clientes')" id="tabClientes" class="tab-btn px-6 py-4 text-xs font-bold uppercase tracking-wider">👥 Pacientes e Historial</button>
+       <button onclick="switchTab('reportes')" id="tabReportes" class="tab-btn px-6 py-4 text-xs font-bold uppercase tracking-wider">📊 Reportes Gestoría</button>
         </div>
-
         <div class="flex items-center gap-4">
-            <button onclick="window.abrirGestionServicios()" class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold shadow-sm transition-all flex items-center gap-2">
+            <button onclick="window.abrirGestionServicios()" class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold shadow-sm flex items-center gap-2">
                 ⚙️ CONFIG. SERVICIOS
             </button>
-            <div class="text-[10px] font-bold text-gray-400">FOOTLAB PRO v2.1</div>
+            <div class="text-[10px] font-bold text-gray-400 uppercase">Footlab Pro 2026</div>
         </div>
     </div>
 </nav>
@@ -580,63 +651,83 @@ window.saveInvoice = () => {
         <div id="calendar"></div>
     </div>
 
+    <!-- VISTA COBROS ACTUALIZADA -->
     <div id="viewCobros" class="tab-content">
-        <div class="max-w-2xl mx-auto space-y-4">
-            <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-blue-600">
-                <h2 class="font-black mb-6 text-blue-900 border-b pb-2 uppercase tracking-tighter text-xl">Registrar Cobro</h2>
-                
-                <div class="grid grid-cols-2 gap-3 mb-4">
-                    <div>
-                        <label class="text-[10px] font-bold text-gray-400">Nº REFERENCIA INTERNA</label>
-                        <input type="number" id="inSerie" class="input-field">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 max-w-6xl mx-auto">
+            
+            <!-- Columna Formulario (Izquierda) -->
+            <div class="lg:col-span-2 space-y-4">
+                <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-blue-600">
+                    <h2 class="font-black mb-6 text-blue-900 border-b pb-2 uppercase tracking-tighter text-xl">Registrar Cobro</h2>
+                    
+                    <div class="grid grid-cols-2 gap-3 mb-4">
+                        <div>
+                            <label class="text-[10px] font-bold text-gray-400 uppercase">Nº Ref</label>
+                            <input type="number" id="inSerie" class="input-field">
+                        </div>
+                        <div>
+                            <label class="text-[10px] font-bold text-gray-400 uppercase">Fecha</label>
+                            <input type="date" id="inFecha" class="input-field">
+                        </div>
                     </div>
-                    <div>
-                        <label class="text-[10px] font-bold text-gray-400">FECHA</label>
-                        <input type="date" id="inFecha" class="input-field">
+
+                    <label class="text-[10px] font-bold text-gray-400 uppercase">Nombre del Paciente</label>
+                    <input type="text" id="inNombre" list="listaPacientes" class="input-field mb-4" placeholder="Buscar paciente para cobrar...">
+                    
+                    <label class="text-[10px] font-bold text-gray-400 uppercase">Añadir del Catálogo</label>
+                    <div class="flex gap-2 mb-4">
+                        <select id="comboServiciosCobro" class="input-field flex-1"></select>
+                        <button onclick="addItemDesdeCombo()" class="bg-blue-600 text-white px-4 rounded-xl font-bold">+</button>
                     </div>
+
+                    <div id="itemsContainer" class="space-y-2 mt-1"></div>
+                    <button onclick="addItem()" class="w-full text-[10px] py-2 border-dashed border-2 mt-3 text-gray-400 font-bold hover:bg-gray-50 uppercase">+ Concepto Manual</button>
+
+                    <div class="mt-8 p-5 bg-blue-50 rounded-xl border border-blue-100">
+                        <h3 class="text-[11px] font-black text-blue-800 uppercase mb-4 tracking-widest text-center">Detalle del Pago</h3>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div><label class="text-[9px] font-bold text-gray-500 uppercase">Efectivo (€)</label><input type="number" id="pagoEfectivo" oninput="updateView()" class="input-field bg-white" value="0"></div>
+                            <div><label class="text-[9px] font-bold text-gray-500 uppercase">Tarjeta (€)</label><input type="number" id="pagoTarjeta" oninput="updateView()" class="input-field bg-white" value="0"></div>
+                            <div><label class="text-[9px] font-bold text-gray-500 uppercase">Bizum (€)</label><input type="number" id="pagoBizum" oninput="updateView()" class="input-field bg-white" value="0"></div>
+                            <div><label class="text-[9px] font-bold text-gray-500 uppercase">Transf (€)</label><input type="number" id="pagoTransf" oninput="updateView()" class="input-field bg-white" value="0"></div>
+                        </div>
+                        <div class="mt-6 pt-4 border-t border-blue-200 flex justify-between items-center">
+                            <span class="text-xs font-black text-red-600 uppercase">Pendiente:</span>
+                            <span id="valPendiente" class="font-black text-red-600 text-xl tracking-tighter">0,00 €</span>
+                        </div>
+                    </div>
+
+                    <button onclick="saveInvoice()" class="w-full bg-blue-700 text-white font-black py-4 mt-6 rounded-xl shadow-lg uppercase text-xs hover:bg-blue-800 transition">Guardar Cobro</button>
                 </div>
-
-                <label class="text-[10px] font-bold text-gray-400">NOMBRE DEL PACIENTE</label>
-                <input type="text" id="inNombre" list="listaPacientes" class="input-field mb-4" placeholder="Buscar paciente para cobrar...">
-                
-                <label class="text-[10px] font-bold text-gray-400">AÑADIR DEL CATÁLOGO</label>
-                <div class="flex gap-2 mb-4">
-                    <select id="comboServiciosCobro" class="input-field flex-1"></select>
-                    <button onclick="addItemDesdeCombo()" class="bg-blue-600 text-white px-4 rounded-xl font-bold">+</button>
-                </div>
-
-                <div id="itemsContainer" class="space-y-2 mt-1"></div>
-                <button onclick="addItem()" class="w-full text-[10px] py-2 border-dashed border-2 mt-3 text-gray-400 font-bold hover:bg-gray-50">+ CONCEPTO MANUAL</button>
-
-                <div class="mt-8 p-5 bg-blue-50 rounded-xl border border-blue-100">
-                    <h3 class="text-[11px] font-black text-blue-800 uppercase mb-4 tracking-widest text-center">Detalle del Pago</h3>
-                    <div class="grid grid-cols-2 gap-4">
-                        <div><label class="text-[9px] font-bold text-gray-500">EFECTIVO (€)</label><input type="number" id="pagoEfectivo" oninput="updateView()" class="input-field bg-white" value="0"></div>
-                        <div><label class="text-[9px] font-bold text-gray-500">TARJETA (€)</label><input type="number" id="pagoTarjeta" oninput="updateView()" class="input-field bg-white" value="0"></div>
-                        <div><label class="text-[9px] font-bold text-gray-500">BIZUM (€)</label><input type="number" id="pagoBizum" oninput="updateView()" class="input-field bg-white" value="0"></div>
-                        <div><label class="text-[9px] font-bold text-gray-500">TRANSF. (€)</label><input type="number" id="pagoTransf" oninput="updateView()" class="input-field bg-white" value="0"></div>
-                    </div>
-                    <div class="mt-6 pt-4 border-t border-blue-200 flex justify-between items-center">
-                        <span class="text-xs font-black text-red-600 uppercase">Pendiente:</span>
-                        <span id="valPendiente" class="font-black text-red-600 text-xl tracking-tighter">0,00 €</span>
-                    </div>
-                </div>
-
-                <button onclick="saveInvoice()" class="w-full bg-blue-700 text-white font-black py-4 mt-6 rounded-xl shadow-lg uppercase text-xs hover:bg-blue-800 transition">Guardar Cobro</button>
             </div>
+
+            <!-- Columna Listado Deudores (Derecha) -->
+            <div class="space-y-4">
+                <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-red-600">
+                    <h2 class="font-black mb-4 text-gray-800 uppercase tracking-tighter text-sm flex items-center gap-2">
+                        <span>⚠️</span> PACIENTES CON DEUDA
+                    </h2>
+                    <div id="listaDeudoresContainer" class="max-h-[600px] overflow-y-auto pr-2">
+                        <!-- Se llena con JS -->
+                    </div>
+                </div>
+            </div>
+
         </div>
     </div>
 
+    <!-- VISTA CLIENTES ACTUALIZADA -->
     <div id="viewClientes" class="tab-content space-y-6">
-        <div class="bg-white p-8 rounded-xl shadow-lg border-t-4 border-blue-600">
+        <div class="bg-white p-8 rounded-xl shadow-lg border-t-4 border-blue-600 max-w-4xl mx-auto">
             <h2 class="font-black mb-6 uppercase text-blue-900 tracking-tight">Expediente del Paciente</h2>
             <div class="flex gap-4">
                 <input type="text" id="buscPaciente" list="listaPacientes" class="flex-1 p-4 border-2 rounded-xl" placeholder="Nombre del paciente...">
                 <button onclick="verHistorialPaciente()" class="bg-blue-600 text-white px-10 rounded-xl font-black hover:bg-blue-700 transition shadow-lg">CARGAR</button>
             </div>
+            <div id="statusBadge" class="mt-4 flex justify-center"></div>
         </div>
 
-        <div id="expedienteArea" class="hidden space-y-6">
+        <div id="expedienteArea" class="hidden space-y-6 max-w-6xl mx-auto">
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
                 <div class="bg-white p-6 rounded-xl shadow border-t-4 border-red-500">
                     <h3 class="text-xs font-black text-gray-400 uppercase">Deuda Pendiente</h3>
@@ -664,40 +755,84 @@ window.saveInvoice = () => {
         </div>
     </div>
 </div>
+<div id="viewReportes" class="tab-content">
+    <div class="bg-white p-8 rounded-xl shadow-lg border-t-4 border-purple-600 max-w-4xl mx-auto">
+        <h2 class="font-black mb-6 uppercase text-purple-900 tracking-tight">Resumen de Ingresos para Gestoría</h2>
+        
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div>
+                <label class="text-[10px] font-bold text-gray-400 uppercase">Desde</label>
+                <input type="date" id="repFechaInicio" class="input-field">
+            </div>
+            <div>
+                <label class="text-[10px] font-bold text-gray-400 uppercase">Hasta</label>
+                <input type="date" id="repFechaFin" class="input-field">
+            </div>
+            <div class="flex items-end">
+                <button onclick="generarReporte()" class="w-full bg-purple-600 text-white p-3 rounded-xl font-black uppercase text-xs hover:bg-purple-700 transition">Generar Informe</button>
+            </div>
+        </div>
 
+        <div id="resultadosReporte" class="hidden space-y-4">
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div class="bg-gray-50 p-4 rounded-xl border">
+                    <p class="text-[10px] font-bold text-gray-400 uppercase">Efectivo</p>
+                    <p id="totalRepEfectivo" class="text-lg font-black text-gray-800">0,00 €</p>
+                </div>
+                <div class="bg-gray-50 p-4 rounded-xl border">
+                    <p class="text-[10px] font-bold text-gray-400 uppercase">Tarjeta</p>
+                    <p id="totalRepTarjeta" class="text-lg font-black text-gray-800">0,00 €</p>
+                </div>
+                <div class="bg-gray-50 p-4 rounded-xl border">
+                    <p class="text-[10px] font-bold text-gray-400 uppercase">Bizum</p>
+                    <p id="totalRepBizum" class="text-lg font-black text-gray-800">0,00 €</p>
+                </div>
+                <div class="bg-gray-50 p-4 rounded-xl border">
+                    <p class="text-[10px] font-bold text-gray-400 uppercase">Transf.</p>
+                    <p id="totalRepTransf" class="text-lg font-black text-gray-800">0,00 €</p>
+                </div>
+            </div>
+            
+            <div class="bg-purple-50 p-4 rounded-xl border border-purple-100 flex justify-between items-center">
+                <span class="font-black text-purple-900 uppercase">TOTAL INGRESOS:</span>
+                <span id="totalRepGeneral" class="text-2xl font-black text-purple-600">0,00 €</span>
+            </div>
+
+            <button onclick="exportarExcel()" class="w-full bg-green-600 text-white p-4 rounded-xl font-black uppercase text-xs shadow-lg hover:bg-green-700 transition">
+                📥 Descargar Excel para Gestoría
+            </button>
+        </div>
+    </div>
+</div>
+<!-- MODALES -->
 <div id="modalCita" class="fixed inset-0 bg-black/70 hidden z-[60] flex items-center justify-center p-4">
     <div class="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-md">
-        <h3 class="text-2xl font-black mb-6 text-gray-800 border-b-2 pb-3">Gestionar Cita</h3>
-        
+        <h3 class="text-2xl font-black mb-6 text-gray-800 border-b-2 pb-3 uppercase">Gestionar Cita</h3>
         <div class="space-y-5">
             <div>
                 <label class="text-[10px] font-black text-gray-400 uppercase">Paciente</label>
                 <input type="text" id="citaPaciente" list="listaPacientes" class="input-field" placeholder="Nombre completo">
             </div>
-
             <div>
-                <label class="text-[10px] font-black text-gray-400 uppercase">Podólogo Responsable</label>
+                <label class="text-[10px] font-black text-gray-400 uppercase">Especialista</label>
                 <select id="citaPodologo" class="input-field">
                     <option value="Laura">Dra. Laura (Azul)</option>
                     <option value="Irene">Dra. Irene (Verde)</option>
                     <option value="Tercero">Podólogo 3 (Amarillo)</option>
                 </select>
             </div>
-
             <div>
                 <label class="text-[10px] font-black text-gray-400 uppercase">Servicio</label>
                 <select id="citaServicio" class="input-field"></select>
             </div>
-
             <div class="flex gap-4 pt-4">
                 <button onclick="guardarCita()" class="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest shadow-lg">Confirmar</button>
-                <button onclick="cerrarModal()" class="px-6 bg-gray-100 text-gray-500 rounded-2xl font-bold">Salir</button>
+                <button onclick="cerrarModal()" class="px-6 bg-gray-100 text-gray-500 rounded-2xl font-bold uppercase text-[10px]">Salir</button>
             </div>
-            
             <div id="areaGestionExistente" class="hidden border-t pt-4 space-y-2">
                 <button onclick="irACobrarDesdeAgenda()" class="w-full bg-orange-500 text-white py-3 rounded-xl font-black uppercase text-[10px]">💰 COBRAR VISITA</button>
                 <button onclick="marcarComoCancelada()" class="w-full bg-red-50 text-red-600 py-3 rounded-xl font-black uppercase text-[10px]">⚠️ CANCELAR CITA</button>
-                <button onclick="eliminarCitaDefinitiva()" class="w-full text-gray-400 text-[10px] underline">Eliminar registro</button>
+                <button onclick="eliminarCitaDefinitiva()" class="w-full text-gray-400 text-[10px] underline uppercase font-bold">Eliminar registro</button>
             </div>
         </div>
     </div>
@@ -726,24 +861,13 @@ window.saveInvoice = () => {
 
 <div id="modalDecisionFactura" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-[200]">
     <div class="bg-white p-8 rounded-3xl shadow-2xl max-w-sm w-full mx-4 border-4 border-white text-center">
-        <div class="bg-blue-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
-            <span class="text-4xl">🧾</span>
-        </div>
-        <h3 class="text-2xl font-black text-gray-800 mb-2">¿Cómo deseas guardar?</h3>
-        <p class="text-gray-500 font-medium mb-8">Selecciona si quieres generar la factura legal en este momento.</p>
-        
+        <div class="bg-blue-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6"><span class="text-4xl">🧾</span></div>
+        <h3 class="text-2xl font-black text-gray-800 mb-2 uppercase">¿Cómo guardar?</h3>
+        <p class="text-gray-500 font-medium mb-8">Elige si deseas generar factura legal o solo registrar el pago.</p>
         <div class="flex flex-col gap-4">
-            <button onclick="window.ejecutarGuardado(true)" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-5 rounded-2xl shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3">
-                <span>📄</span> GUARDAR Y HACER FACTURA
-            </button>
-            
-            <button onclick="window.ejecutarGuardado(false)" class="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-black py-5 rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-3">
-                <span>💰</span> SOLO REGISTRAR PAGO
-            </button>
-            
-            <button onclick="document.getElementById('modalDecisionFactura').classList.add('hidden')" class="text-gray-400 text-xs font-bold uppercase tracking-widest mt-4">
-                Volver al formulario
-            </button>
+            <button onclick="window.ejecutarGuardado(true)" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-5 rounded-2xl shadow-xl transition-all flex items-center justify-center gap-3 uppercase text-xs"><span>📄</span> Factura Legal</button>
+            <button onclick="window.ejecutarGuardado(false)" class="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-black py-5 rounded-2xl transition-all flex items-center justify-center gap-3 uppercase text-xs"><span>💰</span> Registro de Pago</button>
+            <button onclick="document.getElementById('modalDecisionFactura').classList.add('hidden')" class="text-gray-400 text-[10px] font-bold uppercase tracking-widest mt-4">Cancelar</button>
         </div>
     </div>
 </div>
