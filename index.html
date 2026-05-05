@@ -32,6 +32,20 @@
     let dbFacturas = [];
     let selectedSlotInfo = null;
     window.items = [];
+    window.serviciosSeleccionados = [];
+    document.addEventListener('change', (e) => {
+    if (e.target.id !== 'citaServicio') return;
+
+    const value = e.target.value;
+    if (!value) return;
+
+    if (!window.serviciosSeleccionados.includes(value)) {
+        window.serviciosSeleccionados.push(value);
+    }
+
+    renderServiciosSeleccionados();
+    e.target.value = "";
+});
 
     window.addEventListener('load', () => {
         initCalendar();
@@ -40,23 +54,31 @@
         escucharCitas();
         escucharFacturas();
     });
+function escucharServicios() {
+    onSnapshot(collection(window.dbFirestore, "config_servicios"), (s) => {
+        dbServicios = s.docs.map(d => ({ id: d.id, ...d.data() }));
 
-    function escucharServicios() {
-        onSnapshot(collection(window.dbFirestore, "config_servicios"), (s) => {
-            dbServicios = s.docs.map(d => ({ id: d.id, ...d.data() }));
-            const combos = ['citaServicio', 'comboServiciosCobro'];
-            combos.forEach(id => {
-                const el = document.getElementById(id);
-                if (el) {
-                    el.innerHTML = '<option value="">-- Seleccionar servicio --</option>' + 
-                        dbServicios.map(ser => `<option value="${ser.nombre}">${ser.nombre} (${ser.precio}€ - ${ser.tiempo}min)</option>`).join('');
-                }
-            });
-            if(!document.getElementById('modalGestionServicios').classList.contains('hidden')) {
-                renderizarListaAdminServicios();
+        const combos = ['citaServicio', 'comboServiciosCobro'];
+
+        combos.forEach(id => {
+            const el = document.getElementById(id);
+
+            if (el) {
+                el.innerHTML =
+                    '<option value="">-- Añadir servicio --</option>' +
+                    dbServicios.map(ser =>
+                        `<option value="${ser.nombre}">
+                            ${ser.nombre} (${ser.precio}€ - ${ser.tiempo}min)
+                        </option>`
+                    ).join('');
             }
         });
-    }
+
+        if (!document.getElementById('modalGestionServicios').classList.contains('hidden')) {
+            renderizarListaAdminServicios();
+        }
+    });
+}
 
     window.abrirGestionServicios = () => {
         document.getElementById('modalGestionServicios').classList.remove('hidden');
@@ -104,43 +126,53 @@
         document.getElementById('editServColor').value = c || "#60a5fa";
     };
 
-    function escucharCitas() {
-        onSnapshot(collection(window.dbFirestore, "citas"), (s) => {
-            const eventos = s.docs.map(d => {
-                const c = d.data();
-                const nombreServicio = c.servicio ? c.servicio.split(',')[0].trim() : "";
-                const servicioEncontrado = dbServicios.find(ser => ser.nombre === nombreServicio);
-                const colorServicio = servicioEncontrado ? servicioEncontrado.color : '#e2e8f0';
+   function escucharCitas() {
+    onSnapshot(collection(window.dbFirestore, "citas"), (s) => {
+        const eventos = s.docs.map(d => {
+            const c = d.data();
 
-                let colorPodologo = '#94a3b8';
-                if (c.podologo === 'Laura') colorPodologo = '#3b82f6';
-                if (c.podologo === 'Irene') colorPodologo = '#22c55e';
-                if (c.podologo === 'Tercero') colorPodologo = '#eab308';
+            // 👇 soporta viejo (1 servicio) y nuevo (varios)
+            const serviciosTexto = Array.isArray(c.servicios)
+                ? c.servicios.join(", ")
+                : (c.servicio || "");
 
-                return {
-                    id: d.id,
-                    title: `${c.paciente}\n${c.servicio || ""}`,
-                    start: c.inicio,
-                    end: c.fin,
-                    backgroundColor: colorServicio, 
-                    borderColor: 'transparent',
-                    textColor: '#1e293b',
-                    extendedProps: { 
-                        colorPodologo: colorPodologo, 
-                        podologo: c.podologo,
-                        estado: c.estado,
-                        paciente: c.paciente,
-                        servicio: c.servicio
-                    }
-                };
-            }).filter(e => e.extendedProps.estado !== "Cancelada");
-            
-            if (calendar) {
-                calendar.removeAllEvents();
-                calendar.addEventSource(eventos);
-            }
-        });
-    }
+            // 👇 usamos el PRIMER servicio para el color
+            const primerServicio = Array.isArray(c.servicios)
+                ? c.servicios[0]
+                : c.servicio;
+
+            const servicioEncontrado = dbServicios.find(ser => ser.nombre === primerServicio);
+            const colorServicio = servicioEncontrado ? servicioEncontrado.color : '#e2e8f0';
+
+            let colorPodologo = '#94a3b8';
+            if (c.podologo === 'Laura') colorPodologo = '#3b82f6';
+            if (c.podologo === 'Irene') colorPodologo = '#22c55e';
+            if (c.podologo === 'Tercero') colorPodologo = '#eab308';
+
+            return {
+                id: d.id,
+                title: `${c.paciente}\n${serviciosTexto}`, // 👈 AQUÍ VA
+                start: c.inicio,
+                end: c.fin,
+                backgroundColor: colorServicio,
+                borderColor: 'transparent',
+                textColor: '#1e293b',
+                extendedProps: { 
+                    colorPodologo: colorPodologo, 
+                    podologo: c.podologo,
+                    estado: c.estado,
+                    paciente: c.paciente,
+                    servicios: c.servicios || [c.servicio] // 👈 importante
+                }
+            };
+        }).filter(e => e.extendedProps.estado !== "Cancelada");
+
+        if (calendar) {
+            calendar.removeAllEvents();
+            calendar.addEventSource(eventos);
+        }
+    });
+}
 
     window.eliminarServicioBase = async (nombreId) => {
         if(confirm(`¿Estás seguro de eliminar "${nombreId}"?`)) {
@@ -164,42 +196,50 @@
     
     if(t === 'agenda' && calendar) setTimeout(() => calendar.render(), 50);
 };
-    function initCalendar() {
-        calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
-            initialView: 'timeGridWeek',
-            locale: 'es',
-            firstDay: 1,
-            slotMinTime: '09:00:00',
-            slotMaxTime: '21:00:00',
-            slotDuration: '00:15:00',
-            headerToolbar: { left: 'prev,next today', center: 'title', right: 'timeGridWeek,timeGridDay' },
-            selectable: true,
-            editable: true,
-            eventDidMount: function(info) {
-                const colorEspecialista = info.event.extendedProps.colorPodologo || '#94a3b8';
-                const colorServicio = info.event.backgroundColor || '#e2e8f0';
+   function initCalendar() {
+    calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
+        initialView: 'timeGridWeek',
+        locale: 'es',
+        firstDay: 1,
+        slotMinTime: '09:00:00',
+        slotMaxTime: '21:00:00',
+        slotDuration: '00:15:00',
+        headerToolbar: { left: 'prev,next today', center: 'title', right: 'timeGridWeek,timeGridDay' },
+        selectable: true,
+        editable: true,
 
-                info.el.style.setProperty('border-left', `6px solid ${colorEspecialista}`, 'important');
-                info.el.style.setProperty('background-color', colorServicio, 'important');
-                info.el.style.setProperty('color', '#1e293b', 'important');
-                info.el.style.setProperty('border-top', 'none', 'important');
-                info.el.style.setProperty('border-right', 'none', 'important');
-                info.el.style.setProperty('border-bottom', 'none', 'important');
-            },
-            select: (info) => {
-                selectedCitaId = null;
-                selectedSlotInfo = info;
-                abrirModalCita("", "", "Laura");
-            },
-            eventClick: (info) => {
-                selectedCitaId = info.event.id;
-                selectedSlotInfo = { startStr: info.event.startStr, endStr: info.event.endStr };
-                abrirModalCita(info.event.extendedProps.paciente, info.event.extendedProps.servicio, info.event.extendedProps.podologo);
-            }
-        });
-        calendar.render();
-    }
+        eventDidMount: function(info) {
+            const colorEspecialista = info.event.extendedProps.colorPodologo || '#94a3b8';
+            const colorServicio = info.event.backgroundColor || '#e2e8f0';
 
+            info.el.style.setProperty('border-left', `6px solid ${colorEspecialista}`, 'important');
+            info.el.style.setProperty('background-color', colorServicio, 'important');
+            info.el.style.setProperty('color', '#1e293b', 'important');
+            info.el.style.setProperty('border-top', 'none', 'important');
+            info.el.style.setProperty('border-right', 'none', 'important');
+            info.el.style.setProperty('border-bottom', 'none', 'important');
+        },
+
+        select: (info) => {
+            selectedCitaId = null;
+            selectedSlotInfo = info;
+            abrirModalCita("", "", "Laura");
+        },
+
+        eventClick: (info) => {
+            selectedCitaId = info.event.id;
+            selectedSlotInfo = { startStr: info.event.startStr, endStr: info.event.endStr };
+
+            abrirModalCita(
+                info.event.extendedProps.paciente,
+                info.event.extendedProps.servicios || [], // ✅ AQUÍ ESTÁ EL CAMBIO
+                info.event.extendedProps.podologo
+            );
+        }
+    });
+
+    calendar.render();
+}
     function abrirModalCita(pac, ser, pod) {
         document.getElementById('modalCita').classList.remove('hidden');
         document.getElementById('citaPaciente').value = pac || "";
@@ -208,23 +248,85 @@
         if(selectedCitaId) document.getElementById('areaGestionExistente').classList.remove('hidden');
         else document.getElementById('areaGestionExistente').classList.add('hidden');
     }
+window.renderServiciosSeleccionados = () => {
+    const cont = document.getElementById("serviciosSeleccionados");
+    if (!cont) return;
 
-    window.guardarCita = async () => {
-        const pac = document.getElementById('citaPaciente').value;
-        const serNombre = document.getElementById('citaServicio').value;
-        const pod = document.getElementById('citaPodologo').value;
-        if (!pac || !serNombre) return alert("Paciente y Servicio obligatorios");
-        const infoSer = dbServicios.find(s => s.nombre === serNombre) || { tiempo: 30 };
-        let inicio = selectedCitaId ? calendar.getEventById(selectedCitaId).start : new Date(selectedSlotInfo.startStr);
-        let fin = new Date(inicio.getTime() + infoSer.tiempo * 60000);
-        const data = { paciente: pac, servicio: serNombre, podologo: pod, inicio: inicio.toISOString(), fin: fin.toISOString(), estado: "Agendada" };
-        if (selectedCitaId) await updateDoc(doc(window.dbFirestore, "citas", selectedCitaId), data);
-        else {
-            await addDoc(collection(window.dbFirestore, "citas"), data);
-            if(!dbClientes.find(c => c.Nombre === pac)) await setDoc(doc(window.dbFirestore, "clientes", pac), { Nombre: pac, deuda: 0 });
-        }
-        window.cerrarModal();
+    cont.innerHTML = window.serviciosSeleccionados.map((s, i) => `
+        <div class="flex justify-between bg-gray-100 p-2 rounded mb-1">
+            <span>${s}</span>
+            <button onclick="window.eliminarServicioSeleccionado(${i})">❌</button>
+        </div>
+    `).join('');
+};
+
+window.eliminarServicioSeleccionado = (i) => {
+    window.serviciosSeleccionados.splice(i, 1);
+    window.renderServiciosSeleccionados();
+};
+
+document.addEventListener('change', (e) => {
+    if (e.target.id !== 'citaServicio') return;
+
+    const value = e.target.value;
+    if (!value) return;
+
+    if (!window.serviciosSeleccionados.includes(value)) {
+        window.serviciosSeleccionados.push(value);
+    }
+
+    window.renderServiciosSeleccionados();
+    e.target.value = "";
+});
+  window.guardarCita = async () => {
+    const pac = document.getElementById('citaPaciente').value;
+
+    const select = document.getElementById('citaServicio');
+    const servicios = Array.from(select.selectedOptions).map(o => o.value);
+
+    const pod = document.getElementById('citaPodologo').value;
+
+    if (!pac || servicios.length === 0) {
+        return alert("Paciente y al menos 1 servicio obligatorios");
+    }
+
+    // calcular duración total
+    let totalMin = 0;
+    servicios.forEach(nombre => {
+        const info = dbServicios.find(s => s.nombre === nombre);
+        if (info) totalMin += info.tiempo;
+    });
+
+    let inicio = selectedCitaId
+        ? calendar.getEventById(selectedCitaId).start
+        : new Date(selectedSlotInfo.startStr);
+
+    let fin = new Date(inicio.getTime() + totalMin * 60000);
+
+    const data = {
+        paciente: pac,
+        servicios: servicios,   // 👈 ahora array
+        podologo: pod,
+        inicio: inicio.toISOString(),
+        fin: fin.toISOString(),
+        estado: "Agendada"
     };
+
+    if (selectedCitaId) {
+        await updateDoc(doc(window.dbFirestore, "citas", selectedCitaId), data);
+    } else {
+        await addDoc(collection(window.dbFirestore, "citas"), data);
+
+        if (!dbClientes.find(c => c.Nombre === pac)) {
+            await setDoc(doc(window.dbFirestore, "clientes", pac), {
+                Nombre: pac,
+                deuda: 0
+            });
+        }
+    }
+
+    window.cerrarModal();
+};
 
     window.addItemDesdeCombo = () => {
         const serNombre = document.getElementById('comboServiciosCobro').value;
@@ -823,7 +925,9 @@ window.exportarExcel = () => {
             </div>
             <div>
                 <label class="text-[10px] font-black text-gray-400 uppercase">Servicio</label>
-                <select id="citaServicio" class="input-field"></select>
+               <select id="citaServicio" class="input-field"></select>
+               <div id="serviciosSeleccionados" class="mt-2"></div>
+               <div id="serviciosSeleccionados" class="flex flex-wrap gap-2 mt-2"></div>
             </div>
             <div class="flex gap-4 pt-4">
                 <button onclick="guardarCita()" class="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest shadow-lg">Confirmar</button>
